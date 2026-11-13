@@ -79,3 +79,7 @@ Ideas pendientes: órdenes por zonas, gastar material en refuerzos, minimapa, va
 ## Referencia
 
 Modelos de redes de Physarum: Tero et al., *Rules for Biologically Inspired Adaptive Network Design*, Science 327 (2010); Jones, *Characteristics of pattern formation and evolution in approximations of Physarum transport networks*, Artificial Life 16 (2010).
+
+## Licencia
+
+[MIT](LICENSE) © 2026 Tyxop.
