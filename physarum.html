@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Physarum RTS</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#ddd;font:14px system-ui,sans-serif;overflow:hidden}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;image-rendering:pixelated;cursor:crosshair;display:block}
+  #ui{position:fixed;left:10px;top:10px;width:270px;max-height:calc(100vh - 20px);overflow:auto;display:flex;flex-direction:column;gap:8px;
+       background:rgba(0,0,0,.72);border:1px solid #2a2a2a;border-radius:6px;padding:10px;box-sizing:border-box}
+  #ui.min > :not(.hdr){display:none}
+  .hdr{display:flex;justify-content:space-between;align-items:center}
+  label{display:flex;flex-direction:column;font-size:12px;color:#aaa}
+  label span b{color:#e8e020;float:right;font-weight:normal}
+  button{background:#1a1a1a;color:#eee;border:1px solid #444;padding:6px;border-radius:4px;cursor:pointer}
+  button:hover{background:#2a2a2a}
+  p{font-size:12px;color:#888;margin:0}
+  .col{font:12px ui-monospace,monospace;background:#0d0d0d;border:1px solid #222;padding:6px 8px;border-radius:4px;line-height:1.55}
+  .bar{height:6px;background:#222;border-radius:3px;overflow:hidden;margin-top:3px}
+  .bar i{display:block;height:100%}
+  #banner{position:fixed;top:30%;left:0;right:0;text-align:center;font:700 56px system-ui;text-shadow:0 0 20px #000;pointer-events:none;display:none}
+  kbd{background:#222;border:1px solid #444;border-radius:3px;padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="banner"></div>
+<div id="ui">
+  <div class="hdr"><b>Physarum RTS</b><button id="min" style="padding:2px 8px">–</button></div>
+  <p><kbd>Botón derecho</kbd> arrastrar: cámara · <kbd>Rueda</kbd>: zoom · <kbd>H</kbd>: ir a tu colonia. <kbd>Clic izq.</kbd> marca el objetivo de tu colonia (<kbd>Esc</kbd> lo cancela): tus puntas del lado del objetivo avanzan hacia él y se secan las ramas más alejadas. <b style="color:#ff6a6a">Atacar</b> además busca venas y núcleo enemigos y multiplica el daño: corta las ramas que vienen hacia ti o ve a por el núcleo.</p>
+  <div style="display:flex;gap:6px" id="tools">
+    <button id="t_move" data-tool="move" style="flex:1">1 · Mover</button>
+    <button id="t_attack" data-tool="attack" style="flex:1">2 · Atacar</button>
+    <button id="t_food" data-tool="food" style="flex:1">3 · Comida</button>
+  </div>
+  <div id="cols"></div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap">
+    <button id="pause">Pausa</button><button id="reset">Nueva partida</button><button id="clear">Quitar comida</button><button id="home">Centrar (H)</button>
+  </div>
+  <label><span>Velocidad (pasos/frame) <b id="v_steps"></b></span><input id="steps" type="range" min="1" max="10" value="3"></label>
+  <label><span>Relieve (0 = plano) <b id="v_relief"></b></span><input id="relief" type="range" min="0" max="3" step="0.1" value="1.2"></label>
+  <label><span>Comida aleatoria: cantidad (% del mapa) <b id="v_foodPct"></b></span><input id="foodPct" type="range" min="0" max="2" step="0.05" value="0.3"></label>
+  <label><span>Concentración (0 dispersa · 1 manchas densas) <b id="v_foodConc"></b></span><input id="foodConc" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+  <div style="display:flex;gap:6px;align-items:center"><button id="scatter" style="flex:1">Esparcir comida ahora</button>
+    <label style="flex-direction:row;gap:4px;align-items:center"><input type="checkbox" id="autoFood" checked>auto</label></div>
+  <label><span>Comida por píxel <b id="v_foodAmount"></b></span><input id="foodAmount" type="range" min="1" max="30" value="6"></label>
+  <label><span>Agresividad del enemigo <b id="v_aggro"></b></span><input id="aggro" type="range" min="0" max="0.15" step="0.005" value="0.015"></label>
+  <label><span>Daño de ataque <b id="v_attack"></b></span><input id="attack" type="range" min="0.1" max="2" step="0.1" value="0.6"></label>
+  <label><span>Material inicial (al reiniciar) <b id="v_startMass"></b></span><input id="startMass" type="range" min="4000" max="40000" step="1000" value="14000"></label>
+  <label><span>Velocidad de secado <b id="v_dryMax"></b></span><input id="dryMax" type="range" min="1" max="10" value="3"></label>
+  <div id="info" style="font:11px ui-monospace,monospace;color:#666"></div>
+</div>
+<script src="physarum_core.js"></script>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const P=Object.assign({},PHYS_DEFAULTS);
+const ui={};
+let world=null;
+['steps','relief','foodPct','foodConc','foodAmount','aggro','attack','startMass','dryMax'].forEach(k=>{
+  const el=document.getElementById(k),out=document.getElementById('v_'+k);
+  const upd=()=>{ui[k]=+el.value;out.textContent=el.value;
+    if(['foodPct','foodConc','foodAmount','attack','startMass','dryMax'].includes(k))P[k]=+el.value;
+    if(k==='aggro'){P.colonies[1].aggro=+el.value;if(world&&world.cols[1])world.cols[1].aggro=+el.value;}};
+  el.oninput=upd;upd();
+});
+world=new PhysarumWorld(P);
+world.cols[1].aggro=ui.aggro;
+// ---- colores por colonia: vena, membrana, rama seca ----
+const COL=[null,
+  {v:[225,240,8],f:[88,112,0],d:[95,60,40],bar:'#e8e020'},
+  {v:[240,70,82],f:[110,30,42],d:[70,40,95],bar:'#f04656'}];
+// ---- cámara ----
+let Z=2,VW=0,VH=0,img=null,vf,hFine,hCoarse,hTmp,height;
+const cam={x:0,y:0};
+function resize(){
+  VW=Math.ceil(innerWidth/Z);VH=Math.ceil(innerHeight/Z);
+  cv.width=VW;cv.height=VH;img=ctx.createImageData(VW,VH);
+  vf=new Float32Array(VW*VH);hFine=new Float32Array(VW*VH);hCoarse=new Float32Array(VW*VH);hTmp=new Float32Array(VW*VH);height=new Float32Array(VW*VH);
+}
+function goHome(){const c=world.cols[0];cam.x=c.cx-VW/2;cam.y=c.cy-VH/2;}
+resize();goHome();
+addEventListener('resize',resize);
+// ---- relieve (normal map): más densidad = más altura ----
+function boxBlur(src,dst,r){
+  const n=2*r+1;
+  for(let y=0;y<VH;y++){let s=0;const row=y*VW;
+    for(let x=-r;x<=r;x++)s+=src[row+Math.min(VW-1,Math.max(0,x))];
+    for(let x=0;x<VW;x++){hTmp[row+x]=s/n;s+=src[row+Math.min(VW-1,x+r+1)]-src[row+Math.max(0,x-r)];}}
+  for(let x=0;x<VW;x++){let s=0;
+    for(let y=-r;y<=r;y++)s+=hTmp[Math.min(VH-1,Math.max(0,y))*VW+x];
+    for(let y=0;y<VH;y++){dst[y*VW+x]=s/n;s+=hTmp[Math.min(VH-1,y+r+1)*VW+x]-hTmp[Math.max(0,y-r)*VW+x];}}
+}
+const LX=-0.55,LY=-0.6,LZ=0.58,LL=Math.hypot(LX,LY,LZ),lx=LX/LL,ly=LY/LL,lz=LZ/LL;
+const hxv=lx,hyv=ly,hzv=lz+1,hl=Math.hypot(hxv,hyv,hzv),hx=hxv/hl,hy=hyv/hl,hz=hzv/hl;
+function draw(){
+  const x0=Math.floor(cam.x),y0=Math.floor(cam.y),W=world.W,H=world.H;
+  world.renderView(x0,y0,x0+VW+1,y0+VH+1);
+  const vein=world.vein,film=world.film,vown=world.vown,dead=world.dead,food=world.food;
+  const relief=ui.relief,d=img.data;
+  // 1) campo de brillo de la vista
+  for(let vy=0;vy<VH;vy++){const wy=y0+vy,inY=wy>=0&&wy<H;
+    for(let vx=0;vx<VW;vx++){const wx=x0+vx,k=vy*VW+vx;
+      if(!inY||wx<0||wx>=W){vf[k]=-1;continue;}
+      const i=wy*W+wx;vf[k]=vein[i]>0?0.55+0.45*vein[i]:film[i]*0.5;}}
+  // 2) altura = densidad suavizada
+  if(relief>0){
+    boxBlur(vf,hFine,1);boxBlur(vf,hCoarse,5);
+    for(let k=0;k<VW*VH;k++)height[k]=vf[k]<0?0:0.45*hFine[k]+0.9*hCoarse[k];
+  }
+  const S=relief*14;
+  // 3) color + iluminación
+  for(let vy=0;vy<VH;vy++){const wy=y0+vy,inY=wy>=0&&wy<H;
+    for(let vx=0;vx<VW;vx++){
+      const k=vy*VW+vx,o=k*4,v=vf[k];
+      if(v<0){d[o]=8;d[o+1]=8;d[o+2]=12;d[o+3]=255;continue;}             // fuera del mundo
+      const i=wy*W+(x0+vx);
+      const own=vown[i],isDead=v===0&&dead[i];
+      let r=0,g=0,b=0;
+      if(v>0){
+        const c=COL[own]||COL[1],vv=v>0.55?(v-0.55)/0.45:0,ff=v>0.55?1:v/0.55;
+        r=c.v[0]*vv+c.f[0]*ff*(1-vv);g=c.v[1]*vv+c.f[1]*ff*(1-vv);b=c.v[2]*vv+c.f[2]*ff*(1-vv);
+      }else if(isDead){const c=COL[dead[i]]||COL[1];r=c.d[0];g=c.d[1];b=c.d[2];}
+      if(relief>0&&(v>0||isDead)){
+        const xl=vx>0?k-1:k,xr=vx<VW-1?k+1:k,yu=vy>0?k-VW:k,yd=vy<VH-1?k+VW:k;
+        const nx=-(height[xr]-height[xl])*S,ny=-(height[yd]-height[yu])*S,nl=Math.hypot(nx,ny,1);
+        const ndl=(nx*lx+ny*ly+lz)/nl;
+        let sh=0.78+1.5*(ndl-lz);sh=sh<0.32?0.32:sh>1.6?1.6:sh;
+        const ndh=(nx*hx+ny*hy+hz)/nl;
+        const spec=ndh>0?Math.pow(ndh,40)*0.5*Math.min(1,height[k]*1.4):0;
+        r=r*sh+255*spec;g=g*sh+245*spec;b=b*sh+180*spec;
+      }
+      if(food[i]){r=140;g=210;b=255;}
+      d[o]=r>255?255:r;d[o+1]=g>255?255:g;d[o+2]=b>255?255:b;d[o+3]=255;
+    }}
+  ctx.putImageData(img,0,0);
+  const o=world.cols[0].order;
+  if(o){
+    const sx=o.x-x0,sy=o.y-y0,atk=o.type==='attack',pulse=3+((frame>>2)%6);
+    ctx.strokeStyle=atk?'#ff4a4a':'#4aff8a';ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(sx,sy,8,0,6.2832);ctx.moveTo(sx-13,sy);ctx.lineTo(sx-4,sy);ctx.moveTo(sx+4,sy);ctx.lineTo(sx+13,sy);
+    ctx.moveTo(sx,sy-13);ctx.lineTo(sx,sy-4);ctx.moveTo(sx,sy+4);ctx.lineTo(sx,sy+13);ctx.stroke();
+    ctx.globalAlpha=.5;ctx.beginPath();ctx.arc(sx,sy,8+pulse,0,6.2832);ctx.stroke();ctx.globalAlpha=1;
+  }
+}
+// ---- panel de estado ----
+const colsEl=document.getElementById('cols'),info=document.getElementById('info'),banner=document.getElementById('banner');
+function updateStats(){
+  colsEl.innerHTML=world.cols.map(c=>{
+    const free=Math.max(0,c.Mtot-c.used),col=COL[c.id].bar;
+    return `<div class="col" style="border-left:3px solid ${col}"><b style="color:${col}">${c.name}</b>${c.defeated?' — DERROTADO':''}<br>`+
+      `Material ${c.Mtot.toFixed(0)} (libre ${free.toFixed(0)})<br>Puntas ${c.n} · Nodos ${c.nNodes}<br>`+
+      `Comido ${c.eaten.toFixed(0)} · Robado ${c.stolen.toFixed(0)} · Perdido ${c.lost.toFixed(0)}<br>Ramas cortadas ${c.cuts}${c.focus>0?' · <span style="color:#8ad0ff">comida hallada</span>':''}<br>`+
+      `Núcleo ${Math.max(0,c.hp).toFixed(0)}%<div class="bar"><i style="width:${Math.max(0,c.hp)}%;background:${col}"></i></div></div>`;
+  }).join('');
+  info.textContent=`Comida en el mapa ${world.foodSum.toFixed(0)} (${world.foodCount} px) · Mundo ${world.W}×${world.H} · cámara ${cam.x.toFixed(0)},${cam.y.toFixed(0)} · zoom ×${Z}`;
+  if(world.winner){const w=world.cols[world.winner-1];banner.style.display='block';banner.style.color=COL[w.id].bar;banner.textContent=w.id===1?'VICTORIA':'DERROTA';}
+  else banner.style.display='none';
+}
+// ---- entrada: izq = comida, der = mover cámara, rueda = zoom ----
+let paused=false,leftDown=false,rightDown=false,lastX=0,lastY=0,tool='move';
+const toWorld=(e)=>({x:cam.x+e.clientX/Z,y:cam.y+e.clientY/Z});
+function setTool(t){tool=t;document.querySelectorAll('#tools button').forEach(b=>b.style.borderColor=b.dataset.tool===t?(t==='attack'?'#ff5a5a':t==='move'?'#5aff9a':'#8ad0ff'):'#444');}
+function paintFood(e){
+  const p=toWorld(e),cx=Math.floor(p.x),cy=Math.floor(p.y);
+  for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++)if(dx*dx+dy*dy<=9)world.addFood(cx+dx,cy+dy,!e.shiftKey);
+}
+function leftAction(e){
+  if(tool==='food')paintFood(e);
+  else{const p=toWorld(e);world.setOrder(1,p.x,p.y,tool);}       // objetivo de la colonia del jugador
+}
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+cv.addEventListener('mousedown',e=>{
+  if(e.button===2){rightDown=true;lastX=e.clientX;lastY=e.clientY;cv.style.cursor='grabbing';}
+  else if(e.button===0){leftDown=true;leftAction(e);}
+});
+addEventListener('mouseup',e=>{if(e.button===2){rightDown=false;cv.style.cursor='crosshair';}if(e.button===0)leftDown=false;});
+addEventListener('mousemove',e=>{
+  if(rightDown){cam.x-=(e.clientX-lastX)/Z;cam.y-=(e.clientY-lastY)/Z;lastX=e.clientX;lastY=e.clientY;}
+  else if(leftDown&&e.target===cv)leftAction(e);
+});
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const levels=[1,2,3,4,6],k=levels.indexOf(Z),nk=Math.min(levels.length-1,Math.max(0,k+(e.deltaY<0?1:-1)));
+  if(nk===k)return;
+  const p=toWorld(e);Z=levels[nk];resize();
+  cam.x=p.x-e.clientX/Z;cam.y=p.y-e.clientY/Z;               // el punto bajo el ratón no se mueve
+},{passive:false});
+addEventListener('keydown',e=>{
+  if(e.key==='h'||e.key==='H')goHome();
+  else if(e.key==='1')setTool('move');else if(e.key==='2')setTool('attack');else if(e.key==='3')setTool('food');
+  else if(e.key==='Escape')world.clearOrder(1);
+});
+document.querySelectorAll('#tools button').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
+document.getElementById('scatter').onclick=()=>world.scatterFood(0,0,world.W,world.H);
+document.getElementById('autoFood').onchange=function(){P.autoFood=this.checked;};
+setTool('move');
+document.getElementById('pause').onclick=function(){paused=!paused;this.textContent=paused?'Continuar':'Pausa'};
+document.getElementById('reset').onclick=()=>{world.reset();world.cols[1].aggro=ui.aggro;goHome();};
+document.getElementById('clear').onclick=()=>world.clearFood();
+document.getElementById('home').onclick=goHome;
+document.getElementById('min').onclick=()=>document.getElementById('ui').classList.toggle('min');
+let frame=0;
+(function loop(){
+  if(!paused)for(let s=0;s<ui.steps;s++)world.step();
+  // si el mundo creció por la izquierda/arriba, las coordenadas se desplazaron: la cámara las sigue
+  if(world.shiftX||world.shiftY){cam.x+=world.shiftX;cam.y+=world.shiftY;world.shiftX=0;world.shiftY=0;}
+  draw();
+  if(frame++%10===0)updateStats();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
